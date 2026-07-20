@@ -96,22 +96,22 @@ export default function AuctionBoard() {
   const [keepers, setKeepers] = useState(DEFAULT_KEEPERS);
   const [posFilter, setPosFilter] = useState("ALL");
   const [sortKey, setSortKey] = useState("value");
+  const [showAll, setShowAll] = useState(false);
 
   const scored = useMemo(
     () => players.map((p) => ({ ...p, pts: fantasyPoints(p) })),
     [players]
   );
 
-  const { valued, spendablePool } = useMemo(() => {
+  const valued = useMemo(() => {
+    // Total roster spots being bought at auction league-wide (150 in a pure redraft, minus any keepers).
     const auctionSlots = TEAMS * (ROSTER_SPOTS - keepers);
-    const reserveFloor = auctionSlots * 1;
+    const reserveFloor = auctionSlots * 1; // $1 minimum bid reserved for every spot that'll actually be filled
     const pool = TEAMS * BUDGET - reserveFloor;
 
     const byPos: Record<string, any[]> = {};
     POSITIONS.forEach((pos) => {
-      byPos[pos] = scored
-        .filter((p) => p.pos === pos)
-        .sort((a, b) => b.pts - a.pts);
+      byPos[pos] = scored.filter((p) => p.pos === pos).sort((a, b) => b.pts - a.pts);
     });
 
     const replPts: Record<string, number> = {};
@@ -126,61 +126,75 @@ export default function AuctionBoard() {
       vor: Math.max(0, p.pts - replPts[p.pos]),
     }));
 
-    const sumVor = withValue.reduce((s, p) => s + p.vor, 0) || 1;
+    // Only the top `auctionSlots` players by VOR are actually going to get bought — everyone
+    // past that is realistic $0 waiver-wire filler. Capping here is what makes total assigned
+    // dollars equal the total budget, so inflation correctly starts at exactly 100%.
+    const ranked = [...withValue].sort((a, b) => b.vor - a.vor);
+    const draftableIds = new Set(ranked.slice(0, auctionSlots).map((p) => p.id));
 
-    const final = withValue.map((p) => ({
-      ...p,
-      baseDollar: p.vor > 0 ? Math.max(1, Math.round((1 + (p.vor / sumVor) * pool) * 10) / 10) : 1,
-    }));
+    const sumVor = ranked.slice(0, auctionSlots).reduce((s, p) => s + p.vor, 0) || 1;
 
-    return { valued: final, spendablePool: pool };
+    const final = withValue.map((p) => {
+      const draftable = draftableIds.has(p.id);
+      const baseDollar = draftable ? Math.max(1, Math.round((1 + (p.vor / sumVor) * pool) * 10) / 10) : 0;
+      return { ...p, draftable, baseDollar };
+    });
+
+    return final;
   }, [scored, replRank, keepers]);
 
-  const { totalSpent, remainingBudget, undraftedPoolValue, inflation } = useMemo(() => {
+  const { totalSpent, remainingBudget, inflation } = useMemo(() => {
     const spent = valued.reduce((s, p) => s + (p.drafted ? Number(p.price) || 0 : 0), 0);
     const remBudget = TEAMS * BUDGET - spent;
-    const undraftedVal = valued.reduce((s, p) => s + (!p.drafted ? p.baseDollar : 0), 0) || 1;
+    const undraftedVal =
+      valued.reduce((s, p) => s + (p.draftable && !p.drafted ? p.baseDollar : 0), 0) || 1;
     const infl = remBudget / undraftedVal;
-    return { totalSpent: spent, remainingBudget: remBudget, undraftedPoolValue: undraftedVal, inflation: infl };
+    return { totalSpent: spent, remainingBudget: remBudget, inflation: infl };
   }, [valued]);
 
   const rows = useMemo(() => {
     let r = valued.map((p) => ({ ...p, liveDollar: p.drafted ? Number(p.price) || 0 : Math.round(p.baseDollar * inflation * 10) / 10 }));
+    if (!showAll) r = r.filter((p) => p.draftable || p.drafted);
     if (posFilter !== "ALL") r = r.filter((p) => p.pos === posFilter);
     r.sort((a, b) => {
-      if (sortKey === "value") return b.liveDollar - a.liveDollar;
+      if (sortKey === "value") return b.liveDollar - a.liveDollar || b.pts - a.pts;
       if (sortKey === "pts") return b.pts - a.pts;
       return a.name.localeCompare(b.name);
     });
     return r;
-  }, [valued, posFilter, sortKey, inflation]);
+  }, [valued, posFilter, sortKey, inflation, showAll]);
 
   function updatePlayer(id: string, patch: Record<string, any>) {
     setPlayers((prev) => prev.map((p) => (p.id === id ? { ...p, ...patch } : p)));
   }
 
   return (
-    <div className="min-h-screen bg-emerald-950 text-emerald-50 font-sans">
-      <div className="max-w-6xl mx-auto p-6">
+    <div className="min-h-screen bg-[radial-gradient(ellipse_at_top,_#0b3b2e_0%,_#04140f_65%)] text-emerald-50 font-sans antialiased">
+      <div className="max-w-6xl mx-auto px-6 py-8">
         {/* Header */}
-        <div className="border-b-2 border-dashed border-emerald-700 pb-4 mb-5 flex flex-wrap items-end justify-between gap-4">
+        <div className="border-b-2 border-dashed border-emerald-800 pb-5 mb-6 flex flex-wrap items-end justify-between gap-5">
           <div>
-            <div className="text-xs uppercase tracking-[0.3em] text-emerald-400 mb-1">Parkway Garden · Auction Board</div>
-            <h1 className="text-3xl font-black tracking-tight text-amber-400">DRAFT DAY $ CALCULATOR</h1>
+            <div className="text-[11px] uppercase tracking-[0.3em] text-emerald-400/80 mb-1.5 font-medium">
+              Parkway Garden · Auction Board
+            </div>
+            <h1 className="text-3xl sm:text-4xl font-black tracking-tight text-amber-400 drop-shadow-[0_2px_10px_rgba(251,191,36,0.15)]">
+              DRAFT DAY $ CALCULATOR
+            </h1>
           </div>
           <div className="flex gap-3">
-            <div className="bg-emerald-900 border border-emerald-700 rounded px-4 py-2 text-center">
-              <div className="text-[10px] uppercase tracking-widest text-emerald-400">League Spent</div>
-              <div className="font-mono text-xl font-bold text-amber-400 tabular-nums">${totalSpent}</div>
-            </div>
-            <div className="bg-emerald-900 border border-emerald-700 rounded px-4 py-2 text-center">
-              <div className="text-[10px] uppercase tracking-widest text-emerald-400">Remaining</div>
-              <div className="font-mono text-xl font-bold text-amber-400 tabular-nums">${remainingBudget}</div>
-            </div>
-            <div className="bg-emerald-900 border border-emerald-700 rounded px-4 py-2 text-center">
-              <div className="text-[10px] uppercase tracking-widest text-emerald-400">Inflation</div>
-              <div className="font-mono text-xl font-bold text-amber-400 tabular-nums">{(inflation * 100).toFixed(0)}%</div>
-            </div>
+            {[
+              ["League Spent", `$${totalSpent}`],
+              ["Remaining", `$${remainingBudget}`],
+              ["Inflation", `${(inflation * 100).toFixed(0)}%`],
+            ].map(([label, val]) => (
+              <div
+                key={label}
+                className="bg-emerald-900/70 border border-emerald-700/70 rounded-lg px-4 py-2.5 text-center shadow-[0_2px_8px_rgba(0,0,0,0.25)] backdrop-blur-sm min-w-[92px]"
+              >
+                <div className="text-[10px] uppercase tracking-widest text-emerald-400/80">{label}</div>
+                <div className="font-mono text-xl font-bold text-amber-400 tabular-nums leading-tight">{val}</div>
+              </div>
+            ))}
           </div>
         </div>
 
@@ -191,24 +205,41 @@ export default function AuctionBoard() {
               <button
                 key={p}
                 onClick={() => setPosFilter(p)}
-                className={`px-3 py-1 rounded border ${posFilter === p ? "bg-amber-400 text-emerald-950 border-amber-400 font-bold" : "border-emerald-700 text-emerald-300 hover:border-emerald-500"}`}
+                className={`px-3 py-1.5 rounded-md border font-medium transition-colors ${
+                  posFilter === p
+                    ? "bg-amber-400 text-emerald-950 border-amber-400 font-bold shadow-[0_2px_6px_rgba(251,191,36,0.35)]"
+                    : "border-emerald-700 text-emerald-300 hover:border-emerald-500 hover:bg-emerald-900/50"
+                }`}
               >
                 {p}
               </button>
             ))}
           </div>
           <div className="flex gap-1 ml-auto">
-            {[["value","$ Value"],["pts","Points"],["name","Name"]].map(([k,label]) => (
+            {([["value", "$ Value"], ["pts", "Points"], ["name", "Name"]] as const).map(([k, label]) => (
               <button
                 key={k}
                 onClick={() => setSortKey(k)}
-                className={`px-3 py-1 rounded border ${sortKey === k ? "bg-emerald-700 border-emerald-500" : "border-emerald-700 text-emerald-300"}`}
+                className={`px-3 py-1.5 rounded-md border transition-colors ${
+                  sortKey === k
+                    ? "bg-emerald-700 border-emerald-500 text-emerald-50"
+                    : "border-emerald-700 text-emerald-300 hover:bg-emerald-900/50"
+                }`}
               >
                 Sort: {label}
               </button>
             ))}
           </div>
-          <label className="flex items-center gap-2 text-emerald-300">
+          <label className="flex items-center gap-2 text-emerald-300 bg-emerald-900/50 border border-emerald-700 rounded-md px-3 py-1.5">
+            <input
+              type="checkbox"
+              checked={showAll}
+              onChange={(e) => setShowAll(e.target.checked)}
+              className="accent-amber-400 w-3.5 h-3.5 cursor-pointer"
+            />
+            Show waiver wire
+          </label>
+          <label className="flex items-center gap-2 text-emerald-300 bg-emerald-900/50 border border-emerald-700 rounded-md px-3 py-1.5">
             Keepers/team
             <input
               type="number"
@@ -216,71 +247,85 @@ export default function AuctionBoard() {
               max={5}
               value={keepers}
               onChange={(e) => setKeepers(Number(e.target.value) || 0)}
-              className="w-14 bg-emerald-900 border border-emerald-700 rounded px-2 py-1 text-emerald-50"
+              className="no-spinner w-12 bg-emerald-950 border border-emerald-700 rounded px-2 py-0.5 text-emerald-50 focus:outline-none focus:ring-2 focus:ring-amber-400/60"
             />
           </label>
         </div>
 
         {/* Replacement rank tuning */}
-        <div className="mb-4 flex flex-wrap gap-3 text-xs text-emerald-300">
+        <div className="mb-5 flex flex-wrap gap-2 text-xs text-emerald-300">
           {POSITIONS.map((pos) => (
-            <label key={pos} className="flex items-center gap-1 bg-emerald-900 border border-emerald-700 rounded px-2 py-1">
-              {pos} replacement rank
+            <label
+              key={pos}
+              className="flex items-center gap-1.5 bg-emerald-900/50 border border-emerald-700 rounded-md px-2.5 py-1.5"
+            >
+              <span className="font-semibold text-emerald-200">{pos}</span> replacement rank
               <input
                 type="number"
                 value={replRank[pos]}
                 onChange={(e) => setReplRank((r) => ({ ...r, [pos]: Number(e.target.value) || 1 }))}
-                className="w-12 bg-emerald-950 border border-emerald-700 rounded px-1 text-emerald-50"
+                className="no-spinner w-11 bg-emerald-950 border border-emerald-700 rounded px-1 py-0.5 text-emerald-50 focus:outline-none focus:ring-2 focus:ring-amber-400/60"
               />
             </label>
           ))}
         </div>
 
         {/* Table */}
-        <div className="border border-emerald-700 rounded overflow-hidden">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="bg-emerald-900 text-emerald-300 uppercase text-[11px] tracking-wider">
-                <th className="text-left px-3 py-2">Player</th>
-                <th className="text-left px-3 py-2">Pos</th>
-                <th className="text-left px-3 py-2">Team</th>
-                <th className="text-right px-3 py-2">Proj Pts</th>
-                <th className="text-right px-3 py-2">Live $</th>
-                <th className="text-center px-3 py-2">Drafted</th>
-                <th className="text-right px-3 py-2">Price Paid</th>
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map((p, i) => (
-                <tr
-                  key={p.id}
-                  className={`border-t border-dashed border-emerald-800 ${p.drafted ? "opacity-40" : i % 2 ? "bg-emerald-900/30" : ""}`}
-                >
-                  <td className="px-3 py-1.5 font-medium">{p.name}</td>
-                  <td className="px-3 py-1.5 text-emerald-400">{p.pos}</td>
-                  <td className="px-3 py-1.5 text-emerald-400">{p.team}</td>
-                  <td className="px-3 py-1.5 text-right font-mono tabular-nums">{p.pts}</td>
-                  <td className="px-3 py-1.5 text-right font-mono tabular-nums font-bold text-amber-400">${p.liveDollar}</td>
-                  <td className="px-3 py-1.5 text-center">
-                    <input
-                      type="checkbox"
-                      checked={p.drafted}
-                      onChange={(e) => updatePlayer(p.id, { drafted: e.target.checked })}
-                    />
-                  </td>
-                  <td className="px-3 py-1.5 text-right">
-                    <input
-                      type="number"
-                      value={p.price}
-                      onChange={(e) => updatePlayer(p.id, { price: e.target.value })}
-                      className="w-16 bg-emerald-950 border border-emerald-700 rounded px-1 py-0.5 text-right font-mono text-emerald-50"
-                      placeholder="$"
-                    />
-                  </td>
+        <div className="border border-emerald-700 rounded-lg overflow-hidden shadow-[0_4px_20px_rgba(0,0,0,0.3)]">
+          <div className="max-h-[70vh] overflow-y-auto">
+            <table className="w-full text-sm border-collapse">
+              <thead className="sticky top-0 z-10">
+                <tr className="bg-emerald-900 text-emerald-300 uppercase text-[11px] tracking-wider shadow-[0_1px_0_rgba(16,185,129,0.3)]">
+                  <th className="text-left px-3 py-2.5 font-semibold">Player</th>
+                  <th className="text-left px-3 py-2.5 font-semibold">Pos</th>
+                  <th className="text-left px-3 py-2.5 font-semibold">Team</th>
+                  <th className="text-right px-3 py-2.5 font-semibold">Proj Pts</th>
+                  <th className="text-right px-3 py-2.5 font-semibold">Live $</th>
+                  <th className="text-center px-3 py-2.5 font-semibold">Drafted</th>
+                  <th className="text-right px-3 py-2.5 font-semibold">Price Paid</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {rows.map((p, i) => (
+                  <tr
+                    key={p.id}
+                    className={`border-t border-dashed border-emerald-800/70 transition-colors hover:bg-emerald-800/30 ${
+                      p.drafted ? "opacity-40" : i % 2 ? "bg-emerald-900/20" : ""
+                    }`}
+                  >
+                    <td className="px-3 py-2 font-medium">{p.name}</td>
+                    <td className="px-3 py-2 text-emerald-400">{p.pos}</td>
+                    <td className="px-3 py-2 text-emerald-400">{p.team}</td>
+                    <td className="px-3 py-2 text-right font-mono tabular-nums text-emerald-200">{p.pts}</td>
+                    <td className="px-3 py-2 text-right font-mono tabular-nums font-bold text-amber-400">
+                      ${p.liveDollar}
+                    </td>
+                    <td className="px-3 py-2 text-center">
+                      <input
+                        type="checkbox"
+                        checked={p.drafted}
+                        onChange={(e) => updatePlayer(p.id, { drafted: e.target.checked })}
+                        className="accent-amber-400 w-4 h-4 cursor-pointer"
+                      />
+                    </td>
+                    <td className="px-3 py-2 text-right">
+                      <input
+                        type="number"
+                        value={p.price}
+                        onChange={(e) => updatePlayer(p.id, { price: e.target.value })}
+                        className="no-spinner w-16 bg-emerald-950 border border-emerald-700 rounded px-1.5 py-1 text-right font-mono text-emerald-50 focus:outline-none focus:ring-2 focus:ring-amber-400/60 focus:border-amber-400/60"
+                        placeholder="$"
+                      />
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+        <div className="mt-2 text-[11px] text-emerald-500 tracking-wide">
+          Showing {rows.length} player{rows.length === 1 ? "" : "s"}
+          {!showAll ? " · waiver wire hidden" : ""}
         </div>
 
         <div className="mt-5 text-xs text-emerald-400 leading-relaxed space-y-1">
